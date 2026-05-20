@@ -169,6 +169,15 @@ struct always_on_top : Config<bool> {
     static QString name() { return QStringLiteral("always_on_top"); }
 };
 
+struct pin_to_desktop : Config<bool> {
+    static QString name() { return QStringLiteral("pin_to_desktop"); }
+};
+
+struct pin_to_desktop_layer : Config<int> {
+    static QString name() { return QStringLiteral("pin_to_desktop_layer"); }
+        static Value defaultValue() { return 1; } // 0=normal,1=top,2=bottom
+};
+
 struct close_on_unfocus : Config<bool> {
     static QString name() { return QStringLiteral("close_on_unfocus"); }
     static Value defaultValue() { return true; }
@@ -202,6 +211,14 @@ struct restore_geometry : Config<bool> {
     static Value defaultValue() { return true; }
     static const char *description() {
         return "Restore position and size for the main window and other dialogs";
+    }
+};
+
+struct hide_on_focus_loss : Config<bool> {
+    static QString name() { return QStringLiteral("hide_on_focus_loss"); }
+    static Value defaultValue() { return false; }
+    static const char *description() {
+        return "Hide main window automatically when other window is focused";
     }
 };
 

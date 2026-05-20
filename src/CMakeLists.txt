@@ -3,7 +3,7 @@ file(GLOB copyq_SOURCES
     app/*.cpp
     common/*.cpp
     gui/*.cpp
-    gui/notification.h
+    gui/*.h
     item/*.cpp
     scriptable/*.cpp
     scriptable/scriptableproxy.h

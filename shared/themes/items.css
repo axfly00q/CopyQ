@@ -1,44 +1,53 @@
 #ClipboardBrowser{
     ;${font}
     ;color: ${fg}
-    ;background: ${bg}
+    ;background: transparent
+    ;border: none
+    ;outline: 0
+}
+#ClipboardBrowser::item{
+    ;background: transparent
+    ;padding: 0px
 }
 #ClipboardBrowser::item:alternate:!hover:!selected{
     ;color: ${alt_fg}
-    ;background: ${alt_bg}
+    ;background: transparent
 }
 #ClipboardBrowser::item:selected{
     ;color: ${sel_fg}
-    ;background: ${sel_bg}
+    ;background: transparent
 }
 
 #item,#item_child{
     ;${font}
     ;color: ${fg}
     ;background: transparent
+    ;border-radius: 8px
 }
 #item[CopyQ_selected="true"]
 ,#item[CopyQ_selected="true"] #item_child
 {
     ;color: ${sel_fg}
+    ;background: ${sel_bg}
+    ;border-radius: 8px
 }
 
 ${hsv_saturation_factor = 0.5}
     #ClipboardBrowser::item:selected:!active
     {
-        ;background:${sel_bg}
+        ;background: transparent
         ;${sel_item_css}
     }
 ${hsv_saturation_factor = 2}
 ${hsv_value_factor = 0.9}
     #ClipboardBrowser::item:hover:selected
     {
-        ;background:${sel_bg}
+        ;background: transparent
         ;${hover_item_css}
     }
     #ClipboardBrowser::item:hover:!selected
     {
-        ;background:${bg}
+        ;background: transparent
         ;${hover_item_css}
     }
 ${hsv_saturation_factor = 1}

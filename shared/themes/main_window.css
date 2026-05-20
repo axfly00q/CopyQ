@@ -1,6 +1,15 @@
-#searchBar{${search_bar}}
+#searchBar{
+    ;${search_bar}
+    ;border-radius: 14px
+    ;padding: 4px 14px
+    ;min-height: 22px
+}
 
-#searchBar:focus{${search_bar_focused}}
+#searchBar:focus{
+    ;${search_bar_focused}
+    ;border-radius: 14px
+    ;padding: 4px 14px
+}
 
 #tab_bar{${tab_bar_css}}
 #tab_bar::tab:selected{${tab_bar_tab_selected_css}}

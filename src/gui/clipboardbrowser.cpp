@@ -1263,6 +1263,7 @@ void ClipboardBrowser::filterItems(const ItemFilterPtr &filter)
             setRowHidden(row, false);
         scrollTo(currentIndex(), PositionAtCenter);
         emit filterProgressChanged(100);
+        emit filterCountChanged(length(), length());
     }
 
     d.updateAllRows();
@@ -1308,6 +1309,15 @@ void ClipboardBrowser::filterBatch(int filterId, const QPersistentModelIndex &la
 
     const int percentCompleted = (row * 100) / length();
     emit filterProgressChanged(percentCompleted);
+
+    // Emit count for the current visible state
+    int visibleCount = 0;
+    const int total = length();
+    for (int r = 0; r < total; ++r) {
+        if (!isRowHidden(r))
+            ++visibleCount;
+    }
+    emit filterCountChanged(visibleCount, total);
 }
 
 int ClipboardBrowser::currentRowFromSearch(const QString &search)

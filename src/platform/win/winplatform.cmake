@@ -19,6 +19,9 @@ list(APPEND copyq_COMPILE
     ${copyq_RC}
     )
 
+# Link dwmapi for Win11 Mica/rounded-corner effects
+list(APPEND copyq_LIBRARIES dwmapi)
+
 if (MSVC)
     set(copyq_LINK_FLAGS ${copyq_LINK_FLAGS} "/ENTRY:mainCRTStartup")
 endif()

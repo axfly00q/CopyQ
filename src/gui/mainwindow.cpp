@@ -3,6 +3,9 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
+#include "gui/itempreviewpopup.h"
+#include "gui/winblur.h"
+
 #include "common/action.h"
 #include "common/actionoutput.h"
 #include "common/appconfig.h"
@@ -63,6 +66,13 @@
 #include <KStatusNotifierItem>
 #endif
 
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <dwmapi.h>
+// Use CopyQWin11::applyBlur() from winblur.h (already included above)
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif // Q_OS_WIN
+
 #include <QAction>
 #include <QCloseEvent>
 #include <QDesktopServices>
@@ -70,6 +80,7 @@
 #include <QFileDialog>
 #include <QFlags>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLoggingCategory>
 #include <QMenu>
 #include <QMenuBar>
@@ -79,9 +90,11 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QShortcut>
+#include <QSet>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QUrl>
 #include <QVector>
 
@@ -763,6 +776,11 @@ MainWindow::MainWindow(const ClipboardBrowserSharedPtr &sharedData, QWidget *par
     , m_commandDialog(nullptr)
     , m_clipboard(platformNativeInterface()->clipboard())
 {
+#ifdef Q_OS_WIN
+    // Enable per-pixel alpha so Win11 Mica backdrop shows through.
+    setAttribute(Qt::WA_TranslucentBackground);
+#endif
+
     ui->setupUi(this);
 
     m_sharedData->passwordPrompt = new PasswordPrompt(this);
@@ -775,6 +793,20 @@ MainWindow::MainWindow(const ClipboardBrowserSharedPtr &sharedData, QWidget *par
 
     ui->tabWidget->addToolBars(this);
     addToolBar(Qt::RightToolBarArea, m_toolBar);
+
+    // Move search bar into the tab toolbar, right-aligned (always visible)
+    auto *searchBarSpacer = new QWidget(this);
+    searchBarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *tabToolBar = ui->tabWidget->toolBar();
+    tabToolBar->addWidget(searchBarSpacer);
+    tabToolBar->addWidget(ui->searchBar);
+
+    // Search result count label, placed right after the search bar
+    m_filterCountLabel = new QLabel(this);
+    m_filterCountLabel->setObjectName("filterCountLabel");
+    m_filterCountLabel->setStyleSheet("QLabel { color: gray; padding: 0 4px; }");
+    m_filterCountLabel->hide();
+    tabToolBar->addWidget(m_filterCountLabel);
 
     ui->dockWidgetItemPreview->setFocusProxy(ui->scrollAreaItemPreview);
     ui->dockWidgetItemPreview->hide();
@@ -796,6 +828,17 @@ MainWindow::MainWindow(const ClipboardBrowserSharedPtr &sharedData, QWidget *par
              } );
 
     updateIcon();
+
+    // Create persistent pin-to-desktop action (parent=this so clearActions won't delete it)
+    m_actionPinToDesktop = new QAction(QStringLiteral("📌"), this);
+    m_actionPinToDesktop->setToolTip(tr("钉住到桌面 (Pin to Desktop)\n右键更改层级"));
+    m_actionPinToDesktop->setCheckable(true);
+    connect(m_actionPinToDesktop, &QAction::toggled,
+            this, &MainWindow::togglePinnedToDesktop);
+
+    // Hover preview popup
+    m_hoverPreviewPopup = new ItemPreviewPopup(this);
+    initSingleShotTimer(&m_timerHoverPreview, 400, this, &MainWindow::showHoverPreview);
 
     updateFocusWindows();
 
@@ -858,6 +901,8 @@ MainWindow::MainWindow(const ClipboardBrowserSharedPtr &sharedData, QWidget *par
     auto act = m_trayMenu->addAction( appIcon(), tr("&Show/Hide") );
     connect(act, &QAction::triggered, this, &MainWindow::toggleVisibleFromTray);
     m_trayMenu->setDefaultAction(act);
+    if (m_actionPinToDesktop)
+        m_trayMenu->addAction(m_actionPinToDesktop);
     addTrayAction(Actions::File_Preferences);
     addTrayAction(Actions::File_ToggleClipboardStoring);
     m_trayMenu->addSeparator();
@@ -869,11 +914,37 @@ MainWindow::MainWindow(const ClipboardBrowserSharedPtr &sharedData, QWidget *par
         if (m_trayMenuDirty)
             initTrayMenuItems();
     });
+
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+
+#ifdef Q_OS_WIN
+    {
+        // Re-apply on every show: setWindowFlags() recreates the HWND and resets
+        // WA_TranslucentBackground + all DWM attributes.
+        setAttribute(Qt::WA_TranslucentBackground);
+        const HWND hwnd = reinterpret_cast<HWND>(winId());
+
+        // Dark title bar to match dark themes
+        const BOOL dark = TRUE;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+
+        // Win11 rounded window corners
+        const DWORD corner = 2; // DWMWCP_ROUND
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+
+        // Acrylic blur-behind (Win10 1803+ via SetWindowCompositionAttribute)
+        CopyQWin11::applyBlur(hwnd);
+    }
+#endif
 }
 
 bool MainWindow::browseMode() const
 {
-    return ui->searchBar->isHidden();
+    return ui->searchBar->text().isEmpty();
 }
 
 QStringList MainWindow::copyqStats() const
@@ -1480,9 +1551,11 @@ void MainWindow::onBrowserCreated(ClipboardBrowser *browser)
     connect( browser, &ClipboardBrowser::searchRequest,
              this, &MainWindow::findNextOrPrevious );
     connect( browser, &ClipboardBrowser::searchHideRequest,
-             ui->searchBar, &Utils::FilterLineEdit::hide );
+             this, &MainWindow::enterBrowseMode );
     connect( browser, &ClipboardBrowser::searchShowRequest,
              this, &MainWindow::onSearchShowRequest );
+    connect( browser, &ClipboardBrowser::filterCountChanged,
+             this, &MainWindow::onFilterCountChanged );
     connect( browser, &ClipboardBrowser::itemWidgetCreated,
              this, &MainWindow::onItemWidgetCreated );
 
@@ -1507,6 +1580,12 @@ void MainWindow::onBrowserCreated(ClipboardBrowser *browser)
                         browser, topLeft.row(), bottomRight.row());
                     }
              } );
+
+    // Install event filter on viewport to capture hover events for preview popup
+    if (browser->viewport()) {
+        browser->viewport()->setMouseTracking(true);
+        browser->viewport()->installEventFilter(this);
+    }
 }
 
 void MainWindow::onBrowserLoaded(ClipboardBrowser *browser)
@@ -1662,12 +1741,20 @@ void MainWindow::setFilter(const QString &text)
 
 QString MainWindow::filter() const
 {
-    return ui->searchBar->isVisible() ? ui->searchBar->text() : QString();
+    return ui->searchBar->text();
 }
 
 void MainWindow::updateWindowTransparency(bool mouseOver)
 {
     int opacity = 100 - (mouseOver || isActiveWindow() ? m_options.transparencyFocused : m_options.transparency);
+#ifdef Q_OS_WIN
+    // setWindowOpacity() internally calls SetLayeredWindowAttributes(LWA_ALPHA) which
+    // switches WS_EX_LAYERED from per-pixel alpha mode to uniform-opacity mode,
+    // destroying WA_TranslucentBackground and DWM acrylic effects.
+    // Skip the call when opacity is 100% (default) to preserve DWM transparency.
+    if (opacity >= 100)
+        return;
+#endif
     setWindowOpacity(opacity / 100.0);
 }
 
@@ -1976,13 +2063,61 @@ void MainWindow::updateToolBar()
     if ( m_toolBar->isHidden() )
         return;
 
-    QAction *act = actionForMenuItem(Actions::File_New, this, Qt::WindowShortcut);
-    m_toolBar->addAction(act);
+    // Pin-to-desktop button as the very first toolbar item
+    if (m_actionPinToDesktop) {
+        m_toolBar->addAction(m_actionPinToDesktop);
+        if (auto *btn = qobject_cast<QToolButton*>(m_toolBar->widgetForAction(m_actionPinToDesktop))) {
+            btn->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(btn, &QToolButton::customContextMenuRequested, this,
+                    [this, btn](const QPoint &pos) {
+                        QMenu menu;
+                        auto *aBottom = menu.addAction(tr("贴近桌面（默认）"));
+                        aBottom->setCheckable(true);
+                        aBottom->setChecked(m_pinnedLayer == 2);
+                        auto *aTop = menu.addAction(tr("置顶"));
+                        aTop->setCheckable(true);
+                        aTop->setChecked(m_pinnedLayer == 1);
+                        auto *aNormal = menu.addAction(tr("普通层"));
+                        aNormal->setCheckable(true);
+                        aNormal->setChecked(m_pinnedLayer == 0);
+                        const QAction *result = menu.exec(btn->mapToGlobal(pos));
+                        if (!result)
+                            return;
+                        if (result == aBottom)
+                            m_pinnedLayer = 2;
+                        else if (result == aTop)
+                            m_pinnedLayer = 1;
+                        else
+                            m_pinnedLayer = 0;
+                        AppConfig appCfg;
+                        appCfg.setOption(Config::pin_to_desktop_layer::name(), m_pinnedLayer);
+                        if (m_pinnedToDesktop)
+                            togglePinnedToDesktop(true); // re-apply with new layer
+                    });
+        }
+        m_toolBar->addSeparator();
+    }
+
+    QSet<QAction*> toolbarHidden;
+    const auto hideFromToolbar = [&](Actions::Id id) {
+        if (id < static_cast<int>(m_actions.size()) && m_actions[id])
+            toolbarHidden.insert(m_actions[id].data());
+    };
+    hideFromToolbar(Actions::Item_ShowContent);
+    hideFromToolbar(Actions::Item_EditWithEditor);
+    hideFromToolbar(Actions::Item_Action);
+
+    auto *act = static_cast<QAction*>(nullptr);
+    bool lastAddedSeparator = true;
 
     for ( auto action : m_menuItem->actions() ) {
         if ( action->isSeparator() ) {
-            m_toolBar->addSeparator();
-        } else if ( !action->icon().isNull() ) {
+            if (!lastAddedSeparator) {
+                m_toolBar->addSeparator();
+                lastAddedSeparator = true;
+            }
+        } else if ( !action->icon().isNull() && !toolbarHidden.contains(action) ) {
+            lastAddedSeparator = false;
             act = m_toolBar->addAction(QString());
 
             const auto update = [=]() {
@@ -2708,6 +2843,42 @@ bool MainWindow::syncInternalCommands(QVector<Command> *allCommands)
     return changed;
 }
 
+void MainWindow::showHoverPreview()
+{
+    if (!m_hoverBrowser || !m_hoverIndex.isValid() || !m_hoverPreviewPopup)
+        return;
+    const QVariantMap data = m_hoverBrowser->copyIndex(m_hoverIndex);
+    if (data.isEmpty())
+        return;
+    m_hoverPreviewPopup->showPreview(data, QCursor::pos());
+}
+
+void MainWindow::togglePinnedToDesktop(bool checked)
+{
+    m_pinnedToDesktop = checked;
+    AppConfig appCfg;
+    appCfg.setOption(Config::pin_to_desktop::name(), checked);
+
+    // Hide menu bar when pinned, show when unpinned
+    menuBar()->setVisible(!m_pinnedToDesktop);
+
+    WindowFlags flags(this);
+    if (m_pinnedToDesktop) {
+        flags.set(Qt::FramelessWindowHint, true);
+        flags.set(Qt::Tool, true);
+        flags.set(Qt::WindowStaysOnTopHint, m_pinnedLayer == 1);
+        flags.set(Qt::WindowStaysOnBottomHint, m_pinnedLayer == 2);
+    } else {
+        // Restore to user settings
+        flags.set(Qt::FramelessWindowHint, appCfg.option<Config::frameless_window>());
+        flags.set(Qt::Tool, appCfg.option<Config::hide_main_window_in_task_bar>());
+        flags.set(Qt::WindowStaysOnTopHint, appCfg.option<Config::always_on_top>());
+        flags.set(Qt::WindowStaysOnBottomHint, false);
+    }
+    flags.apply();
+
+}
+
 void MainWindow::disableHideWindowOnUnfocus()
 {
     m_timerHideWindowIfNotActive.disconnect();
@@ -2722,6 +2893,15 @@ void MainWindow::enableHideWindowOnUnfocus()
 
 void MainWindow::hideWindowIfNotActive()
 {
+    // Do not auto-hide if disabled in config
+    AppConfig appCfg;
+    if (!appCfg.option<Config::hide_on_focus_loss>())
+        return;
+
+    // Do not auto-hide when pinned to desktop (e.g. Win+Shift+S screenshot)
+    if (m_pinnedToDesktop)
+        return;
+
     if ( isVisible() && !hasDialogOpen(this) && !isAnyApplicationWindowActive() ) {
         COPYQ_LOG("Auto-hiding unfocused main window");
         hideWindow();
@@ -2842,6 +3022,35 @@ void MainWindow::addCommands(const QVector<Command> &commands)
 bool MainWindow::eventFilter(QObject *object, QEvent *ev)
 {
     const QEvent::Type type = ev->type();
+
+    // Hover preview: intercept mouse events on ClipboardBrowser viewport
+    if (type == QEvent::MouseMove) {
+        if (auto *w = qobject_cast<QWidget*>(object)) {
+            if (auto *cb = qobject_cast<ClipboardBrowser*>(w->parent())) {
+                const auto *me = static_cast<QMouseEvent*>(ev);
+                const QModelIndex idx = cb->indexAt(me->pos());
+                if (idx != m_hoverIndex) {
+                    m_hoverIndex = idx;
+                    m_hoverBrowser = cb;
+                    m_timerHoverPreview.stop();
+                    if (m_hoverPreviewPopup)
+                        m_hoverPreviewPopup->hide();
+                    if (idx.isValid())
+                        m_timerHoverPreview.start();
+                }
+            }
+        }
+    } else if (type == QEvent::Leave) {
+        if (auto *w = qobject_cast<QWidget*>(object)) {
+            if (qobject_cast<ClipboardBrowser*>(w->parent())) {
+                m_timerHoverPreview.stop();
+                if (m_hoverPreviewPopup)
+                    m_hoverPreviewPopup->hide();
+                m_hoverIndex = QPersistentModelIndex();
+            }
+        }
+    }
+
     if (type != QEvent::KeyPress && type != QEvent::ShortcutOverride)
         return false;
 
@@ -2992,6 +3201,16 @@ void MainWindow::keyPressEvent(QKeyEvent *event)
             break;
 
         default:
+            // Spotlight-style: forward printable characters to search bar
+            if ( !modifiers.testFlag(Qt::ControlModifier)
+                 && !modifiers.testFlag(Qt::AltModifier)
+                 && !event->text().isEmpty()
+                 && event->text().at(0).isPrint() )
+            {
+                ui->searchBar->setFocus();
+                QCoreApplication::sendEvent(ui->searchBar, event);
+                return;
+            }
             QMainWindow::keyPressEvent(event);
             break;
     }
@@ -3055,12 +3274,34 @@ bool MainWindow::event(QEvent *event)
 bool MainWindow::nativeEvent(
     const QByteArray &eventType, void *message, NativeEventResult *result)
 {
+#ifdef Q_OS_WIN
+    // When pinned to desktop, the window uses WS_EX_LAYERED (from WA_TranslucentBackground)
+    // in per-pixel alpha mode, so Windows hit-tests against pixel alpha and routes scroll/click
+    // events through transparent pixels to the window below.
+    // Override WM_NCHITTEST to return HTCLIENT for the entire window rect so all mouse
+    // events (including wheel) are captured regardless of pixel transparency.
+    if (m_pinnedToDesktop && eventType == "windows_generic_MSG") {
+        const auto *msg = static_cast<MSG*>(message);
+        if (msg->message == WM_NCHITTEST) {
+            *result = HTCLIENT;
+            return true;
+        }
+    }
+#endif
     delayedUpdateForeignFocusWindows();
     return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::loadSettings(QSettings &settings, AppConfig *appConfig)
 {
+    // Set default size for sticky note mode if not restored
+    if (appConfig->option<Config::restore_geometry>()) {
+        // restore_geometry is enabled; size will be restored from saved geometry
+    } else {
+        // restore_geometry disabled; set default size to 300x400 (sticky note mode)
+        resize(300, 400);
+    }
+
     stopMenuCommandFilters(&m_itemMenuMatchCommands);
     stopMenuCommandFilters(&m_trayMenuMatchCommands);
     abortAction(m_displayActionId);
@@ -3136,7 +3377,17 @@ void MainWindow::loadSettings(QSettings &settings, AppConfig *appConfig)
     m_toolBar->setToolButtonStyle(hideToolBarLabels ? Qt::ToolButtonIconOnly
                                                       : Qt::ToolButtonTextUnderIcon);
 
-    m_options.closeOnUnfocus = appConfig->option<Config::close_on_unfocus>();
+    m_options.closeOnUnfocus = appConfig->option<Config::hide_on_focus_loss>()
+        && appConfig->option<Config::close_on_unfocus>();
+
+    // Load pin-to-desktop state and sync toolbar button
+    m_pinnedToDesktop = appConfig->option<Config::pin_to_desktop>();
+    m_pinnedLayer = appConfig->option<Config::pin_to_desktop_layer>();
+    if (m_actionPinToDesktop)
+        m_actionPinToDesktop->setChecked(m_pinnedToDesktop);
+
+    // Hide menu bar if pinned
+    menuBar()->setVisible(!m_pinnedToDesktop);
 
     WindowFlags flags(this);
     const bool alwaysOnTop = appConfig->option<Config::always_on_top>();
@@ -3149,6 +3400,16 @@ void MainWindow::loadSettings(QSettings &settings, AppConfig *appConfig)
     flags.set(Qt::Tool, appConfig->option<Config::hide_main_window_in_task_bar>());
     flags.set(Qt::FramelessWindowHint, appConfig->option<Config::frameless_window>());
     flags.apply();
+
+    // Override flags if pinned to desktop
+    if (m_pinnedToDesktop) {
+        WindowFlags pinFlags(this);
+        pinFlags.set(Qt::FramelessWindowHint, true);
+        pinFlags.set(Qt::Tool, true);
+        pinFlags.set(Qt::WindowStaysOnTopHint, m_pinnedLayer == 1);
+        pinFlags.set(Qt::WindowStaysOnBottomHint, m_pinnedLayer == 2);
+        pinFlags.apply();
+    }
 
     Q_ASSERT( ui->tabWidget->count() > 0 );
 
@@ -4024,6 +4285,21 @@ void MainWindow::onFilterChanged()
     updateItemPreviewAfterMs(2 * itemPreviewUpdateIntervalMsec);
 }
 
+void MainWindow::onFilterCountChanged(int visible, int total)
+{
+    if (!m_filterCountLabel)
+        return;
+    // Only update for the currently visible browser
+    if (sender() != browser())
+        return;
+    if (!ui->searchBar->text().isEmpty() && visible < total) {
+        m_filterCountLabel->setText(QString("%1 / %2").arg(visible).arg(total));
+        m_filterCountLabel->show();
+    } else {
+        m_filterCountLabel->hide();
+    }
+}
+
 void MainWindow::raiseLastWindowAfterMenuClosed()
 {
     if ( m_windowForMenuPaste && !isAnyApplicationWindowActive() )
@@ -4094,7 +4370,14 @@ void MainWindow::enterBrowseMode()
     auto placeholder = getPlaceholder();
     if (placeholder)
         placeholder->setFocus();
-    ui->searchBar->hide();
+
+    if (!ui->searchBar->text().isEmpty()) {
+        const QSignalBlocker blocker(ui->searchBar);
+        ui->searchBar->clear();
+    }
+
+    if (m_filterCountLabel)
+        m_filterCountLabel->hide();
 
     auto c = browserOrNull();
     if (c)
@@ -4103,7 +4386,6 @@ void MainWindow::enterBrowseMode()
 
 void MainWindow::enterSearchMode()
 {
-    ui->searchBar->show();
     ui->searchBar->setFocus(Qt::ShortcutFocusReason);
 
     if ( !ui->searchBar->text().isEmpty() ) {
@@ -4116,7 +4398,6 @@ void MainWindow::enterSearchMode()
 
 void MainWindow::enterSearchMode(const QString &txt)
 {
-    ui->searchBar->show();
     ui->searchBar->setFocus(Qt::ShortcutFocusReason);
     ui->searchBar->setText(txt);
 

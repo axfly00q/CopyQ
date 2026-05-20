@@ -7,6 +7,7 @@
 #include "common/command.h"
 #include "common/navigationstyle.h"
 #include "gui/clipboardbrowsershared.h"
+#include "gui/itempreviewpopup.h"
 #include "gui/menuitems.h"
 #include "item/persistentdisplayitem.h"
 
@@ -29,6 +30,7 @@ class CommandDialog;
 class ConfigurationManager;
 class Notification;
 class QAction;
+class QLabel;
 class QMimeData;
 class SystemTrayIcon;
 class Tabs;
@@ -456,6 +458,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     bool event(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
     /** Hide (minimize to tray) window on close. */
     void closeEvent(QCloseEvent *event) override;
@@ -483,6 +486,7 @@ private:
     void tabTreeMenuRequested(QPoint pos, const QString &groupPath);
     void tabCloseRequested(int tab);
     void onFilterChanged();
+    void onFilterCountChanged(int visible, int total);
 
     void raiseLastWindowAfterMenuClosed();
 
@@ -542,6 +546,8 @@ private:
     void enableHideWindowOnUnfocus();
     void hideWindowIfNotActive();
     void hideWindowOnUnfocus(int intervalMsec);
+    void togglePinnedToDesktop(bool checked);
+    void showHoverPreview();
 
     template <typename SlotReturnType>
     using MainWindowActionSlot = SlotReturnType (MainWindow::*)();
@@ -719,6 +725,11 @@ private:
     QTimer m_timerSaveTabPositions;
     QTimer m_timerHideWindowIfNotActive;
     QTimer m_timerRaiseLastWindowAfterMenuClosed;
+    QTimer m_timerHoverPreview;
+
+    QPointer<ClipboardBrowser> m_hoverBrowser;
+    QPersistentModelIndex m_hoverIndex;
+    ItemPreviewPopup *m_hoverPreviewPopup = nullptr;
 
     bool m_trayMenuDirty = true;
 
@@ -750,6 +761,13 @@ private:
     bool m_isActiveWindow = false;
     bool m_singleClickActivate = 0;
     bool m_enteringSearchMode = false;
+    bool m_pinnedToDesktop = false;
+    int m_pinnedLayer = 1; // 0=normal, 1=top, 2=bottom (above wallpaper, below windows)
+    QAction *m_actionPinToDesktop = nullptr;
+    QLabel *m_filterCountLabel = nullptr;
+#ifdef Q_OS_WIN
+    bool m_win11EffectsApplied = false;
+#endif
 
     QVector<int> m_overrides;
     int m_maxEventHandlerScripts = 10;

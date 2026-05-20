@@ -169,7 +169,9 @@ QVariantMap cloneData(ClipboardDataGuard &data, const QStringList &formats)
      Images in SVG and other XML formats are expected to be relatively small
      so these doesn't have to be ignored.
      */
-    const bool skipBinaryImageFormats = formats.contains(mimeText) && data.hasText();
+    const bool skipBinaryImageFormats = formats.contains(mimeText)
+        && data.hasText()
+        && std::none_of(formats.begin(), formats.end(), isBinaryImageFormat);
 
     QStringList imageFormats;
     for (const auto &mime : formats) {
