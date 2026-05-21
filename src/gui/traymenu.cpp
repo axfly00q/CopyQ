@@ -66,7 +66,9 @@ TrayMenu::TrayMenu(QWidget *parent)
     , m_numberSearch(false)
 {
     m_clipboardItemActionsSeparator = addSeparator();
+    m_clipboardItemActionsSeparator->setVisible(false);
     m_customActionsSeparator = addSeparator();
+    m_customActionsSeparator->setVisible(false);
     initSingleShotTimer( &m_timerUpdateActiveAction, 0, this, &TrayMenu::doUpdateActiveAction );
     setAttribute(Qt::WA_InputMethodEnabled);
 
@@ -131,6 +133,8 @@ QAction *TrayMenu::addClipboardItemAction(const QVariantMap &data, bool showImag
 {
     // Show search text at top of the menu.
     if ( m_clipboardItemActionCount == 0 && m_searchText.isEmpty() ) {
+        // Show separator between clipboard items and main menu items.
+        m_clipboardItemActionsSeparator->setVisible(true);
         if (m_navigationStyle == NavigationStyle::Vi) {
             setSearchMenuItem( tr("Press '/' to search") );
         } else {
@@ -202,6 +206,9 @@ void TrayMenu::clearClipboardItems()
     }
 
     m_clipboardItemActionCount = 0;
+
+    // Hide separator when there are no clipboard items.
+    m_clipboardItemActionsSeparator->setVisible(false);
 
     // Show search text at top of the menu.
     if ( !m_searchText.isEmpty() )

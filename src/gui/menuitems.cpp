@@ -45,7 +45,7 @@ MenuItems menuItems()
                   QStringLiteral("document-open"), IconFolderOpen );
     addMenuItem( items, Actions::File_Export, QObject::tr("&Export..."), QStringLiteral("export"), QKeySequence::Save,
                   QStringLiteral("document-save"), IconFloppyDisk );
-    addMenuItem( items, Actions::File_Preferences, QObject::tr("&Preferences..."), QStringLiteral("preferences"), QObject::tr("Ctrl+P"),
+    addMenuItem( items, Actions::File_Preferences, QObject::tr("&设置..."), QStringLiteral("preferences"), QObject::tr("Ctrl+P"),
                   QStringLiteral("preferences-other"), IconWrench );
     addMenuItem( items, Actions::File_Commands,
                   QObject::tr("C&ommands..."),

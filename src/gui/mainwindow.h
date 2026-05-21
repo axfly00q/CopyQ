@@ -459,6 +459,9 @@ protected:
     void keyReleaseEvent(QKeyEvent *event) override;
     bool event(QEvent *event) override;
     void showEvent(QShowEvent *event) override;
+#ifdef Q_OS_WIN
+    void paintEvent(QPaintEvent *event) override;
+#endif
 
     /** Hide (minimize to tray) window on close. */
     void closeEvent(QCloseEvent *event) override;

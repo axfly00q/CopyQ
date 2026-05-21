@@ -68,6 +68,7 @@
 
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
+#include <windowsx.h>
 #include <dwmapi.h>
 // Use CopyQWin11::applyBlur() from winblur.h (already included above)
 #define DWMWA_SYSTEMBACKDROP_TYPE 38
@@ -79,6 +80,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFlags>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLoggingCategory>
@@ -87,6 +89,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QModelIndex>
+#include <QPainter>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QShortcut>
@@ -95,6 +98,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QWheelEvent>
 #include <QUrl>
 #include <QVector>
 
@@ -794,19 +798,26 @@ MainWindow::MainWindow(const ClipboardBrowserSharedPtr &sharedData, QWidget *par
     ui->tabWidget->addToolBars(this);
     addToolBar(Qt::RightToolBarArea, m_toolBar);
 
-    // Move search bar into the tab toolbar, right-aligned (always visible)
-    auto *searchBarSpacer = new QWidget(this);
-    searchBarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // Move search bar into the tab toolbar, right-aligned (always visible).
+    // Use a container widget with QHBoxLayout so the internal stretch is immune to
+    // QToolBarLayout::setSizeConstraint(SetMinAndMaxSize) called by insertTab().
     auto *tabToolBar = ui->tabWidget->toolBar();
-    tabToolBar->addWidget(searchBarSpacer);
-    tabToolBar->addWidget(ui->searchBar);
+    auto *searchBarContainer = new QWidget(this);
+    searchBarContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *searchBarLayout = new QHBoxLayout(searchBarContainer);
+    searchBarLayout->setContentsMargins(0, 0, 0, 0);
+    searchBarLayout->setSpacing(2);
+    searchBarLayout->addStretch(1);
+    searchBarLayout->addWidget(ui->searchBar);
 
     // Search result count label, placed right after the search bar
-    m_filterCountLabel = new QLabel(this);
+    m_filterCountLabel = new QLabel(searchBarContainer);
     m_filterCountLabel->setObjectName("filterCountLabel");
     m_filterCountLabel->setStyleSheet("QLabel { color: gray; padding: 0 4px; }");
     m_filterCountLabel->hide();
-    tabToolBar->addWidget(m_filterCountLabel);
+    searchBarLayout->addWidget(m_filterCountLabel);
+
+    tabToolBar->addWidget(searchBarContainer);
 
     ui->dockWidgetItemPreview->setFocusProxy(ui->scrollAreaItemPreview);
     ui->dockWidgetItemPreview->hide();
@@ -941,6 +952,25 @@ void MainWindow::showEvent(QShowEvent *event)
     }
 #endif
 }
+
+#ifdef Q_OS_WIN
+void MainWindow::paintEvent(QPaintEvent *event)
+{
+    // With WA_TranslucentBackground + per-pixel-alpha layered window, Windows uses
+    // pixel alpha for hit-testing (WindowFromPoint). Pixels with alpha=0 cause
+    // WM_MOUSEWHEEL/click events to be routed to the window underneath, which
+    // makes scrolling "skip" or feel choppy when child widgets paint with alpha 0.
+    // Fill entire client area with alpha=1 first so all pixels are at least
+    // marginally hit-testable. This is visually invisible but guarantees that
+    // Windows delivers all mouse events to our HWND.
+    {
+        QPainter p(this);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), QColor(0, 0, 0, 1));
+    }
+    QMainWindow::paintEvent(event);
+}
+#endif
 
 bool MainWindow::browseMode() const
 {
@@ -2106,6 +2136,12 @@ void MainWindow::updateToolBar()
     hideFromToolbar(Actions::Item_ShowContent);
     hideFromToolbar(Actions::Item_EditWithEditor);
     hideFromToolbar(Actions::Item_Action);
+    hideFromToolbar(Actions::Item_MoveToClipboard);
+    hideFromToolbar(Actions::Item_EditNotes);
+    hideFromToolbar(Actions::Item_MoveUp);
+    hideFromToolbar(Actions::Item_MoveDown);
+    hideFromToolbar(Actions::Item_MoveToTop);
+    hideFromToolbar(Actions::Item_MoveToBottom);
 
     auto *act = static_cast<QAction*>(nullptr);
     bool lastAddedSeparator = true;
@@ -3278,13 +3314,33 @@ bool MainWindow::nativeEvent(
     // When pinned to desktop, the window uses WS_EX_LAYERED (from WA_TranslucentBackground)
     // in per-pixel alpha mode, so Windows hit-tests against pixel alpha and routes scroll/click
     // events through transparent pixels to the window below.
-    // Override WM_NCHITTEST to return HTCLIENT for the entire window rect so all mouse
-    // events (including wheel) are captured regardless of pixel transparency.
     if (m_pinnedToDesktop && eventType == "windows_generic_MSG") {
         const auto *msg = static_cast<MSG*>(message);
+        // Override WM_NCHITTEST to return HTCLIENT for the entire window rect so all
+        // click/mouse events are captured regardless of pixel transparency.
         if (msg->message == WM_NCHITTEST) {
             *result = HTCLIENT;
             return true;
+        }
+        // WM_MOUSEWHEEL is routed by WindowFromPoint which uses per-pixel alpha,
+        // bypassing WM_NCHITTEST. Intercept and forward to the child widget under cursor.
+        if (msg->message == WM_MOUSEWHEEL || msg->message == WM_MOUSEHWHEEL) {
+            const QPoint globalPos(GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam));
+            QWidget *target = childAt(mapFromGlobal(globalPos));
+            if (target) {
+                const int delta = GET_WHEEL_DELTA_WPARAM(msg->wParam);
+                const QPoint angleDelta = (msg->message == WM_MOUSEWHEEL)
+                    ? QPoint(0, delta) : QPoint(delta, 0);
+                QWheelEvent wheelEvent(
+                    QPointF(target->mapFromGlobal(globalPos)),
+                    QPointF(globalPos),
+                    QPoint(0, 0), angleDelta,
+                    Qt::NoButton, Qt::NoModifier,
+                    Qt::NoScrollPhase, false);
+                QApplication::sendEvent(target, &wheelEvent);
+                *result = 0;
+                return true;
+            }
         }
     }
 #endif
